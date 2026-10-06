@@ -133,6 +133,12 @@ jobs:
           metadata="$(dirname "$APK_FILE")/output-metadata.json"
           version_name=$(jq -er '.elements[0].versionName' "$metadata")
           version_code=$(jq -er '.elements[0].versionCode' "$metadata")
+          # GitHub normalizes parentheses in asset names; hash the published filename.
+          release_dir="$RUNNER_TEMP/release"
+          mkdir -p "$release_dir"
+          release_apk="$release_dir/AppMarket-v${version_name}.${version_code}.apk"
+          cp "$APK_FILE" "$release_apk"
+          echo "APK_FILE=$release_apk" >> "$GITHUB_ENV"
           {
             echo "### Verified APK"
             printf '\n| Field | Value |\n| --- | --- |\n'
