@@ -106,6 +106,8 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
       - name: Verify APK Signature and Record Version
+        env:
+          EXPECTED_CERTIFICATE_SHA256: ${{ vars.SIGNING_CERTIFICATE_SHA256 }}
         run: |
           set -o pipefail
           sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
@@ -119,9 +121,13 @@ jobs:
             exit 1
           fi
           "$apksigner" verify --verbose --print-certs "$APK_FILE" | tee "$RUNNER_TEMP/apk-signature.txt"
-          certificate_sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt")
+          certificate_sha256=$(sed -nE 's/^(Signer #[0-9]+|V[0-9.]+ Signer:) certificate SHA-256 digest: ([[:xdigit:]]{64})$/\2/p' "$RUNNER_TEMP/apk-signature.txt" | tr 'A-F' 'a-f' | sort -u)
           if [[ ! "$certificate_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
             echo "::error::APK signer certificate SHA256 was not reported."
+            exit 1
+          fi
+          if [[ -n "$EXPECTED_CERTIFICATE_SHA256" && "$certificate_sha256" != "$EXPECTED_CERTIFICATE_SHA256" ]]; then
+            echo "::error::APK signer differs from the fork's established signing certificate."
             exit 1
           fi
           metadata="$(dirname "$APK_FILE")/output-metadata.json"
