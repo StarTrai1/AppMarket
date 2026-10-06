@@ -51,7 +51,7 @@
   - **过滤预约应用**：过滤尚未上线的预注册应用。
   - **优化应用名称**：智能裁剪应用名称后携带的营销副标题与推广宣传语。
 - **历史版本回退**：接入海量应用历史库，支持按版本追溯并下载历史版本 APK。
-- **设备指纹与机型模拟**：内置预设及自定义 `MarketProfile`（机型、Android 版本、SDK、分辨率、区域等），解决特定厂商或生态专属应用不可见问题。
+- **设备指纹与机型模拟**：支持预设、自定义及从当前 Android 设备获取 `MarketProfile`（机型、Android 版本、SDK、分辨率、区域等）。在「设置 → 设备信息」选择应用源后，可点击「获取当前设备信息」重新读取并应用；也可继续编辑、保存为模板。获取功能不受设备品牌限制，默认来源保持原有规则；桌面端继续使用预设或自定义信息。
 - **系统生态深度优化**：支持小米 HyperOS 超级岛优化、焦点通知优化等。
 - **跨平台一致体验**：基于 Compose Multiplatform 打造，同时支持 Android 移动端与桌面端（Windows / macOS / Linux）。
 
@@ -91,6 +91,10 @@
 ---
 
 ## 编译与开发
+
+本 fork 的测试、编译和发布统一在 GitHub Actions 的 **Android CI** 中执行，本机不运行测试或编译，也不下载工具链。工作流验证 Android 与 Desktop 代码、运行单元测试并构建 APK；推送与 `ProjectConfig.VERSION_NAME` 一致的 `v*` 标签后，自动发布 APK 和 SHA256 校验文件。
+
+发行包见 [StarTrai1/AppMarket Releases](https://github.com/StarTrai1/AppMarket/releases)。本 fork 使用独立、固定的发布签名，首次安装无法直接覆盖其他签名的版本；本 fork 的后续版本沿用此签名。下面保留上游的环境和命令说明，相关命令仅在 CI runner 中执行。
 
 ### 环境要求
 

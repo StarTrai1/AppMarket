@@ -44,11 +44,12 @@ import com.app.market.resources.cancel
 import com.app.market.resources.delete
 import com.app.market.resources.device_profile
 import com.app.market.resources.profile_delete_template_confirm
+import com.app.market.resources.profile_get_current_device
+import com.app.market.resources.profile_get_current_device_summary
 import com.app.market.resources.profile_save_template
 import com.app.market.resources.profile_source
 import com.app.market.resources.profile_source_current_device
 import com.app.market.resources.profile_source_custom
-import com.app.market.resources.profile_source_device
 import com.app.market.resources.profile_source_preset
 import com.app.market.resources.profile_store_region
 import com.app.market.resources.profile_store_region_china
@@ -187,7 +188,7 @@ fun DeviceProfileScreen(
                 canUseDevice = canUseDevice[appSource] == true,
                 customLabel = customLabel,
                 presetLabel = presetLabel,
-                deviceLabel = deviceLabel(appSource),
+                deviceLabel = stringResource(Res.string.profile_source_current_device),
                 chinaRegionLabel = chinaRegionLabel,
                 globalRegionLabel = globalRegionLabel,
                 oppoStoreRegion = oppoStoreRegion,
@@ -312,6 +313,23 @@ private fun DeviceProfileSourcePage(
                 )
             }
         }
+        if (canUseDevice) {
+            item(key = "get-current-device") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = stringResource(Res.string.profile_get_current_device_summary),
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        style = MiuixTheme.textStyles.body2,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    AppTextButton(
+                        text = stringResource(Res.string.profile_get_current_device),
+                        onClick = { viewModel.setSource(ProfileSource.DEVICE, appSource) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
         if (appSource == OPPO) {
             item(key = "oppo-store-region") {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -398,15 +416,6 @@ private fun DeviceProfileSourcePage(
         }
     }
 }
-
-@Composable
-private fun deviceLabel(appSource: AppSource): String = stringResource(
-    if (appSource == OPPO) {
-        Res.string.profile_source_current_device
-    } else {
-        Res.string.profile_source_device
-    }
-)
 
 @Composable
 private fun SaveTemplateDialog(

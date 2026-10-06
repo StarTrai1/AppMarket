@@ -11,21 +11,24 @@ data class DeviceDefaults(
     val manufacturer: String = "",
     val os: String = androidVersion,
     val osV2: String = "Android",
-    val miuiBigVersionCode: String = "816",
-    val miuiBigVersionName: String = "V816",
-    val osBigVersionCode: String = "3",
-    val osBigVersionName: String = "OS3.0",
+    // 厂商专属字段未知时留空，预设资料由 repository 单独提供。
+    val miuiBigVersionCode: String = "",
+    val miuiBigVersionName: String = "",
+    val osBigVersionCode: String = "",
+    val osBigVersionName: String = "",
     /** `Build.ID`，用于拼 User-Agent 的 `Build/<id>`，必须与真机一致，否则系统应用更新拉不到。 */
-    val buildId: String = "BP2A.250605.031.A3",
+    val buildId: String = "",
     val co: String = "CN",
     val lo: String = "CN",
     val resolution: String = "1080*2400",
     val densityDpi: String = "440",
     val densityScaleFactor: String = "2.75",
     val hasGMSCore: String = "true",
-    val supportedIslandVersion: String = "3",
+    val supportedIslandVersion: String = "",
     /** com.miui.hybrid 版本号，未安装为空串。 */
     val hybridFrameworkVersion: String = "",
+    /** 仅 Android 平台提供真实 Build 字段；桌面预设不能作为当前手机读取。 */
+    val isAndroid: Boolean = false,
     /** 是否小米设备。 */
     val isXiaomi: Boolean = false,
     /** 关键指纹字段是否齐全。 */

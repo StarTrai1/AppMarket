@@ -12,10 +12,10 @@ internal class AndroidDeviceDefaultsDataSource(
     override fun current(): DeviceDefaults {
         val osIncremental = Build.VERSION.INCREMENTAL
         val miOsIncremental = systemProperty("ro.mi.os.version.incremental")
-        val osName = systemProperty("ro.mi.os.version.name").ifBlank { "OS3.0" }
-        val osCode = systemProperty("ro.mi.os.version.code").ifBlank { "3" }
+        val osName = systemProperty("ro.mi.os.version.name")
+        val osCode = systemProperty("ro.mi.os.version.code")
         val miuiName = systemProperty("ro.miui.ui.version.name")
-        val miuiCode = systemProperty("ro.miui.ui.version.code").ifBlank { "816" }
+        val miuiCode = systemProperty("ro.miui.ui.version.code")
 
         val model = Build.MODEL
         val device = Build.DEVICE
@@ -31,7 +31,7 @@ internal class AndroidDeviceDefaultsDataSource(
         val isXiaomi = Build.MANUFACTURER.lowercase() in setOf("xiaomi", "redmi", "poco") ||
                 miuiName.isNotBlank()
         val isComplete = model.isNotBlank() && device.isNotBlank() &&
-                miuiName.isNotBlank() && osName.isNotBlank() &&
+                miuiName.isNotBlank() &&
                 miOsIncremental.isNotBlank()
         val isOppoComplete = model.isNotBlank() && device.isNotBlank() &&
                 Build.VERSION.RELEASE.isNotBlank()
@@ -41,12 +41,16 @@ internal class AndroidDeviceDefaultsDataSource(
         val metrics = context.resources.displayMetrics
         val w = metrics.widthPixels
         val h = metrics.heightPixels
-        val resolution = if (w in 1..h) "$w*$h" else "$h*$w"
+        val resolution = when {
+            w <= 0 || h <= 0 -> ""
+            w <= h -> "$w*$h"
+            else -> "$h*$w"
+        }
 
         return DeviceDefaults(
-            cpuArchitecture = Build.SUPPORTED_ABIS.joinToString(",").ifBlank { "arm64-v8a" },
-            device = device.ifBlank { "haotian" },
-            model = model.ifBlank { "2410DPN6CC" },
+            cpuArchitecture = Build.SUPPORTED_ABIS.joinToString(","),
+            device = device,
+            model = model,
             androidVersion = Build.VERSION.RELEASE,
             sdk = Build.VERSION.SDK_INT.toString(),
             language = Locale.getDefault().language,
@@ -61,29 +65,41 @@ internal class AndroidDeviceDefaultsDataSource(
             } else {
                 miOsIncremental.ifBlank { osIncremental }.ifBlank { Build.VERSION.RELEASE }
             },
-            miuiBigVersionCode = if (isOppoFamily) "" else miuiCode,
-            miuiBigVersionName = if (isOppoFamily) "" else miuiName.ifBlank { "V816" },
-            osBigVersionCode = if (isOppoFamily) oplusRom.majorVersion() else osCode,
-            osBigVersionName = if (isOppoFamily) oplusRom.ifBlank { Build.VERSION.RELEASE } else osName,
-            buildId = Build.ID.ifBlank { "BP2A.250605.031.A3" },
+            // 缺失的厂商系统属性保持未知，不能把其他 Android 设备标为 HyperOS。
+            miuiBigVersionCode = if (isXiaomi) miuiCode else "",
+            miuiBigVersionName = if (isXiaomi) miuiName else "",
+            osBigVersionCode = when {
+                isOppoFamily -> oplusRom.majorVersion()
+                isXiaomi -> osCode
+                else -> ""
+            },
+            osBigVersionName = when {
+                isOppoFamily -> oplusRom.ifBlank { Build.VERSION.RELEASE }
+                isXiaomi -> osName
+                else -> ""
+            },
+            buildId = Build.ID,
             co = Locale.getDefault().country.ifBlank { "CN" },
             lo = if (isOppoFamily) {
                 systemProperty("ro.oplus.regionmark")
                     .ifBlank { systemProperty("ro.vendor.oplus.regionmark") }
                     .ifBlank { Locale.getDefault().country }
                     .ifBlank { "CN" }
-            } else {
+            } else if (isXiaomi) {
                 systemProperty("ro.miui.region").ifBlank { "CN" }
+            } else {
+                Locale.getDefault().country.ifBlank { "CN" }
             },
             resolution = resolution,
-            densityDpi = metrics.densityDpi.toString(),
-            densityScaleFactor = metrics.density.toString(),
+            densityDpi = metrics.densityDpi.takeIf { it > 0 }?.toString().orEmpty(),
+            densityScaleFactor = metrics.density.takeIf { it > 0 }?.toString().orEmpty(),
             hasGMSCore = (
                     systemProperty("ro.miui.has_gmscore") == "1" ||
                             packageVersionCode(context, "com.google.android.gms").isNotBlank()
                     ).toString(),
-            supportedIslandVersion = readIslandVersion(context),
+            supportedIslandVersion = if (isXiaomi) readIslandVersion(context) else "",
             hybridFrameworkVersion = packageVersionCode(context, "com.miui.hybrid"),
+            isAndroid = true,
             isXiaomi = isXiaomi,
             isComplete = isComplete,
             isOppoFamily = isOppoFamily,
@@ -101,8 +117,7 @@ internal class AndroidDeviceDefaultsDataSource(
                     Build.VERSION.RELEASE.isNotBlank() && Build.VERSION.SDK_INT > 0,
             magicVersion = systemProperty("ro.build.version.magic")
                 .ifBlank { systemProperty("ro.build.version.magicui") }
-                .ifBlank { systemProperty("ro.build.version.emui") }
-                .ifBlank { ".0.0" },
+                .ifBlank { systemProperty("ro.build.version.emui") },
             honorMarketingName = systemProperty("ro.config.marketing_name"),
             honorTerminalType = honorTerminalType(context),
             honorAndroidId = runCatching {

@@ -279,7 +279,7 @@ internal class ProfileRepositoryImpl(
         when (preferences.read(ProfilePreferenceKeys.source(appSource))) {
             "device" -> ProfileSource.DEVICE
             "preset" -> ProfileSource.PRESET
-            else -> defaultProfileSource(appSource, canUseDevice(appSource))
+            else -> defaultProfileSource(appSource, deviceDefaults.current())
         }
 
     private suspend fun currentTemplateNameLocked(appSource: AppSource): String? {
@@ -567,7 +567,8 @@ internal class ProfileRepositoryImpl(
         deliveryCountry = defaults.co.ifBlank { preset.deliveryCountry },
         roamingCountry = defaults.lo.ifBlank { preset.roamingCountry },
         osVer = defaults.androidVersion.ifBlank { preset.osVer },
-        magicVersion = defaults.magicVersion.ifBlank { preset.magicVersion },
+        // 非荣耀设备没有 MagicOS 版本，保留协议接受的未知值，不套用预设机型版本。
+        magicVersion = defaults.magicVersion.ifBlank { ".0.0" },
         androidApiVersion = defaults.sdk.ifBlank { preset.androidApiVersion },
         apkVer = preset.apkVer,
         apkVerName = preset.apkVerName,
@@ -692,9 +693,10 @@ internal class ProfileRepositoryImpl(
 
     private companion object {
         const val SYNC_INTERVAL_MS = 86_400_000L
+        // 基础字段读取失败时沿用该来源的兼容预设；平台读取本身不伪造设备信息。
         val DEVICE_BACKED = setOf(
             "cpuArchitecture", "resolution", "densityDpi", "densityScaleFactor", "sdk", "androidVersion",
-            "hybridFrameworkVersion",
+            "hybridFrameworkVersion", "buildId",
         )
         val APP_LEVEL = setOf(
             "marketVersion", "pageConfigVersion", "webResVersion", "instanceId",
@@ -768,9 +770,10 @@ internal fun vivoPresetProfile(
     supportedIslandVersion = "",
 )
 
-internal fun defaultProfileSource(appSource: AppSource, deviceAvailable: Boolean): ProfileSource = when {
+internal fun defaultProfileSource(appSource: AppSource, defaults: DeviceDefaults): ProfileSource = when {
     appSource == AppSource.OPPO -> ProfileSource.PRESET
-    deviceAvailable -> ProfileSource.DEVICE
+    // 扩大手动读取范围不改变既有默认来源，跨品牌设备仍须主动选择。
+    defaults.isAndroid && hasCompatibleDeviceDefaults(appSource, defaults) -> ProfileSource.DEVICE
     else -> ProfileSource.PRESET
 }
 
@@ -788,7 +791,15 @@ internal fun selectProfileField(
     else -> presetValue
 }
 
-internal fun canUseCurrentDevice(appSource: AppSource, defaults: DeviceDefaults): Boolean = when (appSource) {
+internal fun canUseCurrentDevice(appSource: AppSource, defaults: DeviceDefaults): Boolean =
+    appSource in setOf(
+        AppSource.XIAOMI, AppSource.OPPO, AppSource.VIVO,
+        AppSource.SAMSUNG, AppSource.HONOR, AppSource.HUAWEI,
+    ) && defaults.isAndroid && listOf(defaults.model, defaults.device, defaults.androidVersion).all {
+        it.isNotBlank() && !it.equals("unknown", ignoreCase = true)
+    } && (defaults.sdk.toIntOrNull() ?: 0) > 0
+
+private fun hasCompatibleDeviceDefaults(appSource: AppSource, defaults: DeviceDefaults): Boolean = when (appSource) {
     AppSource.XIAOMI -> defaults.isXiaomi && defaults.isComplete
     AppSource.OPPO -> defaults.isOppoFamily && defaults.isOppoComplete
     AppSource.VIVO -> defaults.isVivoFamily && defaults.isVivoComplete

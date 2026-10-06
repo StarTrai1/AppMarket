@@ -152,6 +152,8 @@
     <string name="profile_source_preset">Preset</string>
     <string name="profile_source_device">From device</string>
     <string name="profile_source_current_device">From current device</string>
+    <string name="profile_get_current_device">Get current device info</string>
+    <string name="profile_get_current_device_summary">Read the model, system, CPU, and display info to replace this source’s device fields. Store-specific parameters use defaults; region settings are preserved.</string>
     <string name="profile_store_region">Store region</string>
     <string name="profile_store_region_china">China</string>
     <string name="profile_store_region_global">Global</string>

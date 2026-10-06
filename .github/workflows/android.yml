@@ -9,11 +9,18 @@ on:
     paths-ignore:
       - "README.md"
       - "doc/*"
-      - ".github/workflows/android.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Repository
@@ -30,25 +37,114 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
-      - name: Decode Signing Key
-        run: echo ${{ secrets.SIGNING_KEY }} | base64 -d > keystore.jks
+      - name: Verify Release Version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(sed -n 's/.*const val VERSION_NAME = "\([^"]*\)".*/\1/p' buildSrc/src/main/kotlin/ProjectConfig.kt)
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Release tag must match ProjectConfig.VERSION_NAME (v$version)."
+            exit 1
+          fi
+
+      - name: Run Tests and Compile Android and Desktop
+        run: |
+          ./gradlew --stacktrace \
+            :domain:desktopTest \
+            :data:desktopTest \
+            :app:shared:desktopTest \
+            :app:shared:compileAndroidMain \
+            :app:shared:compileKotlinDesktop \
+            :app:desktop:compileKotlinDesktop
+
+      - name: Upload Test Reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: |
+            domain/build/reports/tests/
+            data/build/reports/tests/
+            app/shared/build/reports/tests/
+          if-no-files-found: ignore
+
+      - name: Configure APK Signing
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          KEYSTORE_PASS: ${{ secrets.KEY_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          configured=0
+          for value in "$SIGNING_KEY" "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASSWORD"; do
+            if [[ -n "$value" ]]; then
+              configured=$((configured + 1))
+            fi
+          done
+          if [[ "$configured" -eq 4 ]]; then
+            umask 077
+            printf '%s' "$SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+            echo "KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
+          elif [[ "$configured" -ne 0 || "$GITHUB_REF" == refs/tags/* ]]; then
+            echo "::error::All four signing secrets are required for a release: SIGNING_KEY, KEY_STORE_PASSWORD, ALIAS, KEY_PASSWORD."
+            exit 1
+          else
+            echo "This CI APK uses the default debug key because signing secrets are not configured." >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Build Release APK
         run: |
-          ./gradlew :app:android:assembleRelease
-          echo "APK_FILE=$(find app/android/build/outputs/apk/release -name '*.apk' | head -n 1)" >> $GITHUB_ENV
+          ./gradlew --stacktrace :app:android:assembleRelease
+          mapfile -d '' apks < <(find app/android/build/outputs/apk/release -name '*.apk' -print0)
+          if [[ "${#apks[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one release APK."
+            exit 1
+          fi
+          echo "APK_FILE=${apks[0]}" >> "$GITHUB_ENV"
         env:
-          KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
           KEYSTORE_PASS: ${{ secrets.KEY_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
+      - name: Verify APK Signature and Record Version
+        run: |
+          set -o pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk_root" || ! -d "$sdk_root/build-tools" ]]; then
+            echo "::error::Android SDK build-tools directory is unavailable."
+            exit 1
+          fi
+          apksigner=$(find "$sdk_root/build-tools" -mindepth 2 -maxdepth 2 -type f -name apksigner | sort -V | tail -n 1)
+          if [[ -z "$apksigner" || ! -x "$apksigner" ]]; then
+            echo "::error::Android SDK apksigner is unavailable."
+            exit 1
+          fi
+          "$apksigner" verify --verbose --print-certs "$APK_FILE" | tee "$RUNNER_TEMP/apk-signature.txt"
+          certificate_sha256=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/apk-signature.txt")
+          if [[ ! "$certificate_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "::error::APK signer certificate SHA256 was not reported."
+            exit 1
+          fi
+          metadata="$(dirname "$APK_FILE")/output-metadata.json"
+          version_name=$(jq -er '.elements[0].versionName' "$metadata")
+          version_code=$(jq -er '.elements[0].versionCode' "$metadata")
+          {
+            echo "### Verified APK"
+            printf '\n| Field | Value |\n| --- | --- |\n'
+            printf '| Version name | %s |\n' "$version_name"
+            printf '| Version code | %s |\n' "$version_code"
+            printf '| Signer certificate SHA256 | `%s` |\n' "$certificate_sha256"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove Signing Key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/keystore.jks"
+
       - name: Upload APK Artifact
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/upload-artifact@v7
         with:
           path: ${{ env.APK_FILE }}
           archive: false
+          if-no-files-found: error
 
       - name: Display APK Hashes
         run: |
@@ -58,3 +154,18 @@ jobs:
           echo "| SHA256 | \`$(sha256sum "$APK_FILE" | awk '{ print $1 }')\` |" >> $GITHUB_STEP_SUMMARY
           echo "| SHA1 | \`$(sha1sum "$APK_FILE" | awk '{ print $1 }')\` |" >> $GITHUB_STEP_SUMMARY
           echo "| MD5 | \`$(md5sum "$APK_FILE" | awk '{ print $1 }')\` |" >> $GITHUB_STEP_SUMMARY
+          cd "$(dirname "$APK_FILE")"
+          apk_name=$(basename "$APK_FILE")
+          sha256sum "$apk_name" > "$apk_name.sha256"
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "AppMarket $GITHUB_REF_NAME" \
+            --generate-notes \
+            "$APK_FILE" "$APK_FILE.sha256"

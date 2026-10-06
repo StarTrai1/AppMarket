@@ -1,6 +1,7 @@
 package com.app.market.data.repository
 
 import com.app.market.data.remote.xiaomi.platform.DeviceDefaults
+import com.app.market.data.remote.xiaomi.platform.DesktopDeviceDefaultsDataSource
 import com.app.market.data.remote.xiaomi.platform.isOppoFamilyDevice
 import com.app.market.data.remote.xiaomi.platform.isSamsungFamilyDevice
 import com.app.market.data.remote.xiaomi.platform.isVivoFamilyDevice
@@ -14,14 +15,33 @@ import kotlin.test.assertTrue
 class CurrentDeviceProfileTest {
     @Test
     fun compatibleAndroidSourcesDefaultToTheCurrentDevice() {
-        assertEquals(ProfileSource.PRESET, defaultProfileSource(AppSource.OPPO, deviceAvailable = true))
-        assertEquals(ProfileSource.DEVICE, defaultProfileSource(AppSource.HONOR, deviceAvailable = true))
-        assertEquals(ProfileSource.DEVICE, defaultProfileSource(AppSource.XIAOMI, deviceAvailable = true))
-        assertEquals(ProfileSource.PRESET, defaultProfileSource(AppSource.XIAOMI, deviceAvailable = false))
+        val compatibleDevices = mapOf(
+            AppSource.XIAOMI to defaults().copy(isXiaomi = true, isComplete = true),
+            AppSource.OPPO to defaults(isOppoFamily = true, isOppoComplete = true),
+            AppSource.VIVO to defaults(isVivoFamily = true, isVivoComplete = true),
+            AppSource.SAMSUNG to defaults(isSamsungFamily = true, isSamsungComplete = true),
+            AppSource.HONOR to defaults(
+                isHonorFamily = true,
+                isHonorComplete = true,
+                honorAndroidId = "app-scoped-id",
+            ),
+            AppSource.HUAWEI to defaults().copy(isHuaweiFamily = true, isHuaweiComplete = true),
+        )
+
+        compatibleDevices.forEach { (brandSource, device) ->
+            editableSources.forEach { source ->
+                val expected = if (source == brandSource && source != AppSource.OPPO) {
+                    ProfileSource.DEVICE
+                } else {
+                    ProfileSource.PRESET
+                }
+                assertEquals(expected, defaultProfileSource(source, device), "$brandSource / $source")
+            }
+        }
     }
 
     @Test
-    fun honorUsesOnlyACompleteHonorRuntime() {
+    fun missingHonorIdentityKeepsPresetDefaultButAllowsManualDeviceSelection() {
         val android = defaults(
             isHonorFamily = true,
             isHonorComplete = true,
@@ -29,8 +49,46 @@ class CurrentDeviceProfileTest {
         )
 
         assertTrue(canUseCurrentDevice(AppSource.HONOR, android))
-        assertFalse(canUseCurrentDevice(AppSource.HONOR, android.copy(honorAndroidId = "")))
-        assertFalse(canUseCurrentDevice(AppSource.HONOR, android.copy(isHonorFamily = false)))
+        val withoutIdentity = android.copy(honorAndroidId = "")
+        assertTrue(canUseCurrentDevice(AppSource.HONOR, withoutIdentity))
+        assertEquals(ProfileSource.PRESET, defaultProfileSource(AppSource.HONOR, withoutIdentity))
+        assertTrue(canUseCurrentDevice(AppSource.HONOR, android.copy(isHonorFamily = false)))
+    }
+
+    @Test
+    fun everyEditableSourceAcceptsAndroidAcrossBrandsWithoutVendorProperties() {
+        listOf("Google", "Xiaomi", "OPPO", "vivo", "samsung", "HONOR", "HUAWEI").forEach { brand ->
+            val android = defaults().copy(manufacturer = brand)
+            editableSources.forEach { source ->
+                assertTrue(canUseCurrentDevice(source, android), "$brand / $source")
+                assertEquals(ProfileSource.PRESET, defaultProfileSource(source, android))
+            }
+            assertFalse(canUseCurrentDevice(AppSource.WANDOUJIA, android))
+            assertFalse(canUseCurrentDevice(AppSource.TAPTAP, android))
+        }
+    }
+
+    @Test
+    fun desktopAndMissingAndroidBuildFieldsCannotPretendToBeTheCurrentPhone() {
+        val unavailable = listOf(
+            DesktopDeviceDefaultsDataSource().current(),
+            defaults().copy(isAndroid = false, isXiaomi = true, isComplete = true),
+            defaults().copy(model = ""),
+            defaults().copy(device = ""),
+            defaults().copy(androidVersion = ""),
+            defaults().copy(model = "unknown"),
+            defaults().copy(device = "UNKNOWN"),
+            defaults().copy(sdk = "0"),
+            defaults().copy(sdk = "invalid"),
+        )
+        unavailable.forEach { device ->
+            editableSources.forEach { source ->
+                assertFalse(canUseCurrentDevice(source, device), "$source / $device")
+            }
+        }
+        editableSources.forEach { source ->
+            assertEquals(ProfileSource.PRESET, defaultProfileSource(source, unavailable.first()))
+        }
     }
 
     @Test
@@ -58,14 +116,14 @@ class CurrentDeviceProfileTest {
     }
 
     @Test
-    fun oppoSourceAcceptsOnlyCompleteOppoFamilyDevices() {
+    fun incompleteVendorPropertiesDoNotBlockManualOppoSelection() {
         val oppo = defaults(isOppoFamily = true, isOppoComplete = true)
 
         assertTrue(canUseCurrentDevice(AppSource.OPPO, oppo))
-        assertFalse(canUseCurrentDevice(AppSource.XIAOMI, oppo))
-        assertFalse(canUseCurrentDevice(AppSource.VIVO, oppo))
+        assertTrue(canUseCurrentDevice(AppSource.XIAOMI, oppo))
+        assertTrue(canUseCurrentDevice(AppSource.VIVO, oppo))
         assertFalse(canUseCurrentDevice(AppSource.WANDOUJIA, oppo))
-        assertFalse(canUseCurrentDevice(AppSource.OPPO, oppo.copy(isOppoComplete = false)))
+        assertTrue(canUseCurrentDevice(AppSource.OPPO, oppo.copy(isOppoComplete = false)))
     }
 
     @Test
@@ -84,7 +142,7 @@ class CurrentDeviceProfileTest {
         assertFalse(isVivoFamilyDevice("Xiaomi", "Redmi", "popsicle"))
         val vivo = defaults(isVivoFamily = true, isVivoComplete = true)
         assertTrue(canUseCurrentDevice(AppSource.VIVO, vivo))
-        assertFalse(canUseCurrentDevice(AppSource.OPPO, vivo))
+        assertTrue(canUseCurrentDevice(AppSource.OPPO, vivo))
     }
 
     @Test
@@ -115,13 +173,17 @@ class CurrentDeviceProfileTest {
     }
 
     @Test
-    fun samsungSourceAcceptsOnlyCompleteSamsungDevices() {
+    fun samsungBrandRecognitionRemainsSeparateFromManualAvailability() {
         assertTrue(isSamsungFamilyDevice("SAMSUNG", "samsung"))
         assertFalse(isSamsungFamilyDevice("Xiaomi", "Redmi"))
         val samsung = defaults(isSamsungFamily = true, isSamsungComplete = true)
         assertTrue(canUseCurrentDevice(AppSource.SAMSUNG, samsung))
-        assertFalse(canUseCurrentDevice(AppSource.OPPO, samsung))
-        assertFalse(canUseCurrentDevice(AppSource.SAMSUNG, samsung.copy(isSamsungComplete = false)))
+        assertTrue(canUseCurrentDevice(AppSource.OPPO, samsung))
+        assertTrue(canUseCurrentDevice(AppSource.SAMSUNG, samsung.copy(isSamsungComplete = false)))
+        assertEquals(
+            ProfileSource.PRESET,
+            defaultProfileSource(AppSource.SAMSUNG, samsung.copy(isSamsungComplete = false)),
+        )
     }
 
     private fun defaults(
@@ -141,6 +203,7 @@ class CurrentDeviceProfileTest {
         androidVersion = "16",
         sdk = "36",
         language = "zh",
+        isAndroid = true,
         isOppoFamily = isOppoFamily,
         isOppoComplete = isOppoComplete,
         isVivoFamily = isVivoFamily,
@@ -150,5 +213,10 @@ class CurrentDeviceProfileTest {
         isHonorFamily = isHonorFamily,
         isHonorComplete = isHonorComplete,
         honorAndroidId = honorAndroidId,
+    )
+
+    private val editableSources = listOf(
+        AppSource.XIAOMI, AppSource.OPPO, AppSource.VIVO,
+        AppSource.SAMSUNG, AppSource.HONOR, AppSource.HUAWEI,
     )
 }

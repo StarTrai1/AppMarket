@@ -68,10 +68,26 @@ class DeviceProfileViewModel(
     }
 
     fun setSource(source: ProfileSource, appSource: AppSource) = mutate {
+        if (source == ProfileSource.DEVICE && !store.canUseDevice(appSource)) return@mutate
+        if (source == ProfileSource.DEVICE) {
+            // 区域可能从旧设备资料推断；先保存当前选择，避免获取后跟随本机地区变化。
+            when (appSource) {
+                AppSource.OPPO -> store.setOppoStoreRegion(store.currentOppoStoreRegion())
+                AppSource.SAMSUNG -> store.setSamsungStoreRegion(store.currentSamsungStoreRegion())
+                else -> Unit
+            }
+        }
         store.setSource(source, appSource)
-        if (appSource == AppSource.SAMSUNG) resetSamsungRequestContexts()
+        if (appSource == AppSource.SAMSUNG && source != ProfileSource.DEVICE) {
+            resetSamsungRequestContexts()
+        }
         edited.remove(appSource)
-        refreshAll()
+        if (source == ProfileSource.DEVICE) {
+            // 获取设备信息只替换当前来源的字段，保留区域参数和其他来源尚未保存的编辑。
+            refreshSource(appSource)
+        } else {
+            refreshAll()
+        }
     }
 
     fun setOppoStoreRegion(region: OppoStoreRegion) = mutate {

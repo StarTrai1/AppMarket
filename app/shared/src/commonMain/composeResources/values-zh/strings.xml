@@ -153,6 +153,8 @@
     <string name="profile_source_preset">预设信息</string>
     <string name="profile_source_device">从设备获取</string>
     <string name="profile_source_current_device">从当前设备获取</string>
+    <string name="profile_get_current_device">获取当前设备信息</string>
+    <string name="profile_get_current_device_summary">读取型号、系统、CPU 和显示信息，替换此来源的设备字段。商店专用参数使用默认值，区域设置保持不变。</string>
     <string name="profile_store_region">商店区域</string>
     <string name="profile_store_region_china">中国</string>
     <string name="profile_store_region_global">全球</string>
