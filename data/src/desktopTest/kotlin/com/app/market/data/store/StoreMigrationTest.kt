@@ -82,20 +82,32 @@ class StoreMigrationTest {
     fun updatePrefsWaitsForTheFirstPersistedSnapshot() = runTest {
         val store = ControlledPreferencesDataSource()
         val scope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
-        val prefs = UpdatePreferencesRepositoryImpl(store, scope, Json)
+        try {
+            val prefs = UpdatePreferencesRepositoryImpl(store, scope, Json)
 
-        advanceUntilIdle()
-        assertFalse(prefs.initialized.value)
+            advanceUntilIdle()
+            assertFalse(prefs.initialized.value)
 
-        store.emit(UpdatePreferenceKeys.HomePage, HomePage.SEARCH.token)
-        store.emit(UpdatePreferenceKeys.ShowSystemUpdates, false)
-        store.emitDefaultsForRemainingUpdatePreferences()
-        advanceUntilIdle()
+            store.emit(UpdatePreferenceKeys.HomePage, HomePage.SEARCH.token)
+            store.emit(UpdatePreferenceKeys.ShowSystemUpdates, false)
+            store.emitDefaultsExceptCategorySources()
+            advanceUntilIdle()
+            assertFalse(prefs.initialized.value)
 
-        assertTrue(prefs.initialized.value)
-        assertEquals(HomePage.SEARCH, prefs.homePage.value)
-        assertFalse(prefs.showSystemUpdates.value)
-        scope.cancel()
+            store.emit(UpdatePreferenceKeys.GameSources, "")
+            advanceUntilIdle()
+            assertFalse(prefs.initialized.value)
+
+            store.emit(UpdatePreferenceKeys.AppSources, "")
+            advanceUntilIdle()
+            assertTrue(prefs.initialized.value)
+            assertEquals(HomePage.SEARCH, prefs.homePage.value)
+            assertFalse(prefs.showSystemUpdates.value)
+            assertEquals(AppSource.Default, prefs.gameSources.value)
+            assertEquals(AppSource.Default, prefs.appSources.value)
+        } finally {
+            scope.cancel()
+        }
     }
 
     @Test
@@ -250,7 +262,7 @@ private class ControlledPreferencesDataSource(
         booleanFlow(key).tryEmit(value)
     }
 
-    fun emitDefaultsForRemainingUpdatePreferences() {
+    fun emitDefaultsExceptCategorySources() {
         emit(UpdatePreferenceKeys.RemoveSearchAds, false)
         emit(UpdatePreferenceKeys.FilterQuickGames, false)
         emit(UpdatePreferenceKeys.FilterReservationApps, false)
