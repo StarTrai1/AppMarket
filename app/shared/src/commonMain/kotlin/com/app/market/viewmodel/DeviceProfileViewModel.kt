@@ -7,18 +7,23 @@ import com.app.market.domain.model.profile.MarketProfile
 import com.app.market.domain.model.profile.MarketProfileFields
 import com.app.market.domain.model.profile.OppoRequestContext
 import com.app.market.domain.model.profile.OppoStoreRegion
+import com.app.market.domain.model.profile.ProfileFieldOrigin
 import com.app.market.domain.model.profile.ProfileSource
+import com.app.market.domain.model.profile.ProfileSyncResult
 import com.app.market.domain.model.profile.ProfileTemplate
 import com.app.market.domain.model.profile.SamsungRequestContext
 import com.app.market.domain.model.profile.SamsungStoreRegion
 import com.app.market.domain.model.profile.oppoRequestContext
 import com.app.market.domain.model.profile.requestContext
 import com.app.market.domain.repository.ProfileRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 class DeviceProfileViewModel(
     private val store: ProfileRepository,
@@ -26,6 +31,15 @@ class DeviceProfileViewModel(
 
     private val _profiles = MutableStateFlow<Map<AppSource, MarketProfile>>(emptyMap())
     val profiles: StateFlow<Map<AppSource, MarketProfile>> = _profiles.asStateFlow()
+
+    private val _fieldOrigins = MutableStateFlow<Map<AppSource, Map<String, ProfileFieldOrigin>>>(emptyMap())
+    val fieldOrigins: StateFlow<Map<AppSource, Map<String, ProfileFieldOrigin>>> = _fieldOrigins.asStateFlow()
+
+    private val _isSyncingConfiguration = MutableStateFlow(false)
+    val isSyncingConfiguration: StateFlow<Boolean> = _isSyncingConfiguration.asStateFlow()
+
+    private val _configurationSyncResult = MutableStateFlow<ProfileSyncResult?>(null)
+    val configurationSyncResult: StateFlow<ProfileSyncResult?> = _configurationSyncResult.asStateFlow()
 
     private val _sources = MutableStateFlow<Map<AppSource, ProfileSource>>(emptyMap())
     val sources: StateFlow<Map<AppSource, ProfileSource>> = _sources.asStateFlow()
@@ -57,13 +71,46 @@ class DeviceProfileViewModel(
     private val _showSaveTemplateDialog = MutableStateFlow<AppSource?>(null)
     val showSaveTemplateDialog: StateFlow<AppSource?> = _showSaveTemplateDialog.asStateFlow()
 
-    private val edited = mutableMapOf<AppSource, MutableSet<String>>()
+    private val edited = mutableMapOf<AppSource, MutableMap<String, Long>>()
+    private var editRevision = 0L
     private val editedOppoRequestContexts = mutableMapOf<OppoStoreRegion, OppoRequestContext>()
     private val editedSamsungRequestContexts = mutableMapOf<SamsungStoreRegion, SamsungRequestContext>()
+    private val refreshMutex = Mutex()
 
     init {
         viewModelScope.launch {
+            store.profileUpdates.collect { appSource ->
+                if (appSource in EDITABLE_SOURCES) {
+                    try {
+                        refreshSource(appSource)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        // 后台刷新失败时保留当前页面，后续通知仍可重试。
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
             refreshAll()
+        }
+    }
+
+    fun syncConfiguration() {
+        if (!_isSyncingConfiguration.compareAndSet(expect = false, update = true)) return
+        _configurationSyncResult.value = null
+        viewModelScope.launch {
+            try {
+                val result = store.syncConfiguration()
+                refreshSource(AppSource.XIAOMI)
+                _configurationSyncResult.value = result
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _configurationSyncResult.value = ProfileSyncResult.FAILED
+            } finally {
+                _isSyncingConfiguration.value = false
+            }
         }
     }
 
@@ -141,19 +188,23 @@ class DeviceProfileViewModel(
 
     fun useCustom(appSource: AppSource) = mutate {
         val profile = _profiles.value[appSource] ?: return@mutate
+        val savedEdits = edited[appSource].orEmpty().toMap()
         store.save(profile, fieldsFor(appSource).toSet(), appSource)
         store.setCurrentTemplateName(null, appSource)
-        edited.remove(appSource)
+        clearPersistedEdits(appSource, savedEdits)
         refreshAll()
     }
 
     fun update(appSource: AppSource, name: String, value: String) {
         val profile = _profiles.value[appSource] ?: return
-        edited.getOrPut(appSource) { mutableSetOf() }.add(name)
+        edited.getOrPut(appSource) { mutableMapOf() }[name] = ++editRevision
         _templateNames.update { it + (appSource to null) }
         _profiles.update { it + (appSource to MarketProfileFields.set(profile, name, value)) }
         _overriddenFields.update { overridden ->
             overridden + (appSource to (overridden[appSource].orEmpty() + name))
+        }
+        _fieldOrigins.update { origins ->
+            origins + (appSource to (origins[appSource].orEmpty() + (name to ProfileFieldOrigin.CUSTOM)))
         }
     }
 
@@ -163,9 +214,10 @@ class DeviceProfileViewModel(
             if (appSource == AppSource.SAMSUNG) editedSamsungRequestContexts.toMap() else emptyMap()
         mutate {
             val profile = _profiles.value[appSource] ?: return@mutate
+            val savedEdits = edited[appSource].orEmpty().toMap()
             store.save(
                 profile,
-                (edited[appSource].orEmpty() + _overriddenFields.value[appSource].orEmpty()).toSet(),
+                savedEdits.keys + _overriddenFields.value[appSource].orEmpty(),
                 appSource,
             )
             oppoContextEdits.forEach { (region, context) ->
@@ -180,7 +232,7 @@ class DeviceProfileViewModel(
                     editedSamsungRequestContexts.remove(region)
                 }
             }
-            edited.remove(appSource)
+            clearPersistedEdits(appSource, savedEdits)
             refreshAll()
         }
     }
@@ -198,8 +250,9 @@ class DeviceProfileViewModel(
 
     fun saveTemplate(name: String, appSource: AppSource) = mutate {
         val profile = _profiles.value[appSource] ?: return@mutate
+        val savedEdits = edited[appSource].orEmpty().toMap()
         store.saveTemplate(name.ifBlank { defaultTemplateName() }, profile, appSource)
-        edited.remove(appSource)
+        clearPersistedEdits(appSource, savedEdits)
         refreshAll()
         _showSaveTemplateDialog.value = null
     }
@@ -213,6 +266,15 @@ class DeviceProfileViewModel(
 
     private fun mutate(block: suspend () -> Unit) {
         viewModelScope.launch { block() }
+    }
+
+    private fun clearPersistedEdits(appSource: AppSource, savedEdits: Map<String, Long>) {
+        val pending = edited[appSource] ?: return
+        // 只清除本次保存的修订；保存期间再次输入，即使改回原值也保留为未保存编辑。
+        savedEdits.forEach { (field, revision) ->
+            if (pending[field] == revision) pending.remove(field)
+        }
+        if (pending.isEmpty()) edited.remove(appSource)
     }
 
     private suspend fun resetSamsungRequestContexts() {
@@ -234,16 +296,31 @@ class DeviceProfileViewModel(
             editedSamsungRequestContexts[samsungRegion] ?: store.samsungRequestContext(samsungRegion)
     }
 
-    private suspend fun refreshSource(appSource: AppSource) {
-        _sources.update { it + (appSource to store.currentSource(appSource)) }
-        _templateNames.update { it + (appSource to store.currentTemplateName(appSource)) }
-        _profiles.update { it + (appSource to store.load(appSource)) }
-        _overriddenFields.update {
-            it + (appSource to MarketProfileFields.ALL.filterTo(mutableSetOf()) { field ->
-                store.isOverridden(field, appSource)
-            })
+    private suspend fun refreshSource(appSource: AppSource) = refreshMutex.withLock {
+        val source = store.currentSource(appSource)
+        val templateName = store.currentTemplateName(appSource)
+        val snapshot = store.snapshot(appSource)
+        val overridden = MarketProfileFields.ALL.filterTo(mutableSetOf()) { field ->
+            store.isOverridden(field, appSource)
         }
-        _canUseDevice.update { it + (appSource to store.canUseDevice(appSource)) }
+        val deviceAvailable = store.canUseDevice(appSource)
+
+        // 读取期间用户仍可输入；在所有挂起调用结束后合并最新编辑，避免旧快照覆盖输入。
+        val pendingFields = edited[appSource].orEmpty().keys.toSet()
+        val displayedProfile = _profiles.value[appSource]
+        val profile = pendingFields.fold(snapshot.profile) { refreshed, field ->
+            if (displayedProfile == null) refreshed else {
+                MarketProfileFields.set(refreshed, field, MarketProfileFields.valueOf(displayedProfile, field))
+            }
+        }
+        val origins = snapshot.fieldOrigins + pendingFields.associateWith { ProfileFieldOrigin.CUSTOM }
+        val hasContextEdits = appSource == AppSource.SAMSUNG && editedSamsungRequestContexts.isNotEmpty()
+        _sources.update { it + (appSource to source) }
+        _templateNames.update { it + (appSource to templateName.takeIf { pendingFields.isEmpty() && !hasContextEdits }) }
+        _profiles.update { it + (appSource to profile) }
+        _fieldOrigins.update { it + (appSource to origins) }
+        _overriddenFields.update { it + (appSource to (overridden + pendingFields)) }
+        _canUseDevice.update { it + (appSource to deviceAvailable) }
     }
 
     companion object {

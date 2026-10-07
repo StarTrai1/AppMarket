@@ -3,13 +3,13 @@ package com.app.market.data.repository
 import com.app.market.data.local.PreferenceChanges
 import com.app.market.data.local.PreferencesDataSource
 import com.app.market.data.remote.xiaomi.LenientJson
-import com.app.market.data.remote.xiaomi.XiaomiApi
 import com.app.market.data.remote.xiaomi.XiaomiClient
 import com.app.market.data.remote.xiaomi.XiaomiProtocol
 import com.app.market.data.remote.xiaomi.epochMillis
 import com.app.market.data.remote.xiaomi.obj
 import com.app.market.data.remote.xiaomi.platform.DeviceDefaults
 import com.app.market.data.remote.xiaomi.platform.DeviceDefaultsDataSource
+import com.app.market.data.remote.xiaomi.platform.validVersionCode
 import com.app.market.data.remote.xiaomi.preferences.ProfilePreferenceKeys
 import com.app.market.data.remote.xiaomi.preferences.XiaomiIdentityPreferenceKeys
 import com.app.market.data.remote.xiaomi.str
@@ -19,6 +19,9 @@ import com.app.market.domain.model.profile.MarketProfileFields
 import com.app.market.domain.model.profile.OppoRequestContext
 import com.app.market.domain.model.profile.OppoStoreRegion
 import com.app.market.domain.model.profile.ProfileSource
+import com.app.market.domain.model.profile.ProfileFieldOrigin
+import com.app.market.domain.model.profile.ProfileSnapshot
+import com.app.market.domain.model.profile.ProfileSyncResult
 import com.app.market.domain.model.profile.ProfileTemplate
 import com.app.market.domain.model.profile.SamsungRequestContext
 import com.app.market.domain.model.profile.SamsungStoreRegion
@@ -27,10 +30,18 @@ import com.app.market.domain.model.profile.oppoStoreRegion
 import com.app.market.domain.model.profile.requestContext
 import com.app.market.domain.model.profile.samsungStoreRegion
 import com.app.market.domain.repository.ProfileRepository
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -42,18 +53,25 @@ import kotlinx.serialization.json.put
 
 internal class ProfileRepositoryImpl(
     private val preferences: PreferencesDataSource,
-    private val api: XiaomiApi,
+    private val configurationSource: ProfileConfigurationSource,
     private val deviceDefaults: DeviceDefaultsDataSource,
     private val xiaomiClient: XiaomiClient,
 ) : ProfileRepository {
 
     private val mutex = Mutex()
-    private val cached = mutableMapOf<AppSource, MarketProfile>()
+    private val syncMutex = Mutex()
+    private val cached = mutableMapOf<AppSource, ProfileSnapshot>()
+    private val configurationRevision = MutableStateFlow(0L)
+    override val profileUpdates: Flow<AppSource> = configurationRevision
+        .filter { it > 0L }
+        .map { AppSource.XIAOMI }
 
     override fun canUseDevice(appSource: AppSource): Boolean =
         canUseCurrentDevice(appSource, deviceDefaults.current())
 
     override suspend fun load(appSource: AppSource): MarketProfile = mutex.withLock { loadLocked(appSource) }
+
+    override suspend fun snapshot(appSource: AppSource): ProfileSnapshot = mutex.withLock { snapshotLocked(appSource) }
 
     override suspend fun currentSource(appSource: AppSource): ProfileSource =
         mutex.withLock { currentSourceLocked(appSource) }
@@ -198,48 +216,95 @@ internal class ProfileRepositoryImpl(
         refreshCachedProfileLocked(appSource)
     }
 
-    override suspend fun syncFromServerIfDue() = withContext(Dispatchers.Default) {
+    override suspend fun syncFromServerIfDue() {
+        syncConfiguration(force = false)
+    }
+
+    override suspend fun syncConfiguration(): ProfileSyncResult = syncConfiguration(force = true)
+
+    private suspend fun syncConfiguration(force: Boolean): ProfileSyncResult = try {
+        syncConfigurationLocked(force)
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        ProfileSyncResult.FAILED
+    }
+
+    private suspend fun syncConfigurationLocked(force: Boolean): ProfileSyncResult = syncMutex.withLock {
         val profile = mutex.withLock {
             val now = epochMillis()
             val last = preferences.read(ProfilePreferenceKeys.LastServerSync)?.toLongOrNull() ?: 0L
             val hasServerDctx = !preferences.read(XiaomiIdentityPreferenceKeys.ServerDeviceContext).isNullOrBlank()
             // Old builds stored a raw FID as dctx. Force one migration sync until /expId supplies
             // the encrypted server context, even when config versions were synced recently.
-            if (now - last < SYNC_INTERVAL_MS && hasServerDctx) return@withLock null
-            loadLocked()
-        } ?: return@withContext
+            if (!force && now - last < SYNC_INTERVAL_MS && hasServerDctx) {
+                null
+            } else {
+                loadLocked()
+            }
+        } ?: return@withLock ProfileSyncResult.SUCCESS
 
-        val result = runCatching { api.syncServerVersions(profile) }.getOrNull() ?: return@withContext
+        // 网络等待不占用资料锁；自动和手动同步共用独立锁，避免旧请求覆盖新结果。
+        val fetched = try {
+            withTimeoutOrNull(SYNC_TIMEOUT_MS) { configurationSource.fetch(profile) }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+        currentCoroutineContext().ensureActive()
+        val result = fetched ?: return@withLock ProfileSyncResult.FAILED
+        val webResVersion = result.webResVersion.validVersionCode()
+        val pageConfigVersion = result.pageConfigVersion.validVersionCode()
+        if (webResVersion.isBlank() && pageConfigVersion.isBlank()) return@withLock ProfileSyncResult.FAILED
+
+        // 配置和时间戳一次提交；提交开始后完成缓存刷新及通知，避免取消留下半份配置。
         mutex.withLock {
-            preferences.put(ProfilePreferenceKeys.LastServerSync, epochMillis().toString())
-            var changed = false
-            if (result.webResVersion.isNotBlank()) {
-                preferences.put(ProfilePreferenceKeys.SyncedWebResource, result.webResVersion)
-                changed = true
+            currentCoroutineContext().ensureActive()
+            withContext(NonCancellable) {
+                val values = buildMap {
+                    put(ProfilePreferenceKeys.LastServerSync, epochMillis().toString())
+                    if (webResVersion.isNotBlank()) put(ProfilePreferenceKeys.SyncedWebResource, webResVersion)
+                    if (pageConfigVersion.isNotBlank()) put(ProfilePreferenceKeys.SyncedPageConfig, pageConfigVersion)
+                }
+                preferences.update(ProfilePreferenceKeys.LastServerSync.namespace, PreferenceChanges(strings = values))
+                // 配置版本不影响 UA；提交后只使缓存失效，避免后续读取失败掩盖已成功的写入。
+                cached.remove(AppSource.XIAOMI)
+                // 修订号写入不挂起；慢页面读取最新快照，不阻塞同步，也不漏掉最终更新。
+                configurationRevision.value += 1L
             }
-            if (result.pageConfigVersion.isNotBlank()) {
-                preferences.put(ProfilePreferenceKeys.SyncedPageConfig, result.pageConfigVersion)
-                changed = true
-            }
-            if (changed) refreshCachedProfileLocked(AppSource.XIAOMI)
+        }
+        currentCoroutineContext().ensureActive()
+        if (webResVersion.isNotBlank() && pageConfigVersion.isNotBlank()) {
+            ProfileSyncResult.SUCCESS
+        } else {
+            ProfileSyncResult.PARTIAL
         }
     }
 
-    private suspend fun loadLocked(appSource: AppSource = AppSource.XIAOMI): MarketProfile {
+    private suspend fun loadLocked(appSource: AppSource = AppSource.XIAOMI): MarketProfile =
+        snapshotLocked(appSource).profile
+
+    private suspend fun snapshotLocked(appSource: AppSource): ProfileSnapshot {
         cached[appSource]?.let { return it }
         val defaults = deviceDefaults.current()
         val preset = presetProfile(defaults, stableIdLocked(appSource), appSource)
-        val device = deviceProfile(preset, defaults)
-        val useDevice = currentSourceLocked(appSource) == ProfileSource.DEVICE &&
-                canUseCurrentDevice(appSource, defaults)
-        val syncedVersions = mapOf(
-            "webResVersion" to preferences.read(ProfilePreferenceKeys.SyncedWebResource),
-            "pageConfigVersion" to preferences.read(ProfilePreferenceKeys.SyncedPageConfig),
-        )
-        return resolve(preset, device, useDevice, overridesLocked(appSource), syncedVersions)
+        val device = deviceProfile(preset, defaults, appSource)
+        val deviceRequested = currentSourceLocked(appSource) == ProfileSource.DEVICE
+        val useDevice = deviceRequested && canUseCurrentDevice(appSource, defaults)
+        // 配置版本属于小米协议，不应跨来源污染 vivo 等商店的预设或自定义值。
+        val syncedVersions = if (appSource == AppSource.XIAOMI) {
+            mapOf(
+                "webResVersion" to preferences.read(ProfilePreferenceKeys.SyncedWebResource),
+                "pageConfigVersion" to preferences.read(ProfilePreferenceKeys.SyncedPageConfig),
+            )
+        } else {
+            emptyMap()
+        }
+        return resolve(preset, device, useDevice, deviceRequested, overridesLocked(appSource), syncedVersions)
             .also {
                 cached[appSource] = it
-                if (appSource == AppSource.XIAOMI) xiaomiClient.updateUserAgent(it)
+                if (appSource == AppSource.XIAOMI) xiaomiClient.updateUserAgent(it.profile)
             }
     }
 
@@ -535,7 +600,11 @@ internal class ProfileRepositoryImpl(
         honorIsParallelSpace = "1",
     )
 
-    private fun deviceProfile(preset: MarketProfile, defaults: DeviceDefaults): MarketProfile = MarketProfile(
+    private fun deviceProfile(
+        preset: MarketProfile,
+        defaults: DeviceDefaults,
+        appSource: AppSource,
+    ): MarketProfile = MarketProfile(
         co = defaults.co,
         la = defaults.language.ifBlank { "zh" },
         lo = defaults.lo,
@@ -553,10 +622,14 @@ internal class ProfileRepositoryImpl(
         miuiBigVersionName = defaults.miuiBigVersionName,
         osBigVersionCode = defaults.osBigVersionCode,
         osBigVersionName = defaults.osBigVersionName,
-        marketVersion = preset.marketVersion,
+        marketVersion = if (appSource == AppSource.XIAOMI || appSource == AppSource.VIVO) {
+            defaults.marketVersions[appSource].orEmpty().validVersionCode()
+        } else {
+            ""
+        },
         pageConfigVersion = preset.pageConfigVersion,
         webResVersion = preset.webResVersion,
-        hybridFrameworkVersion = defaults.hybridFrameworkVersion,
+        hybridFrameworkVersion = defaults.hybridFrameworkVersion.validVersionCode(),
         buildId = defaults.buildId,
         instanceId = preset.instanceId,
         hasGMSCore = defaults.hasGMSCore,
@@ -598,12 +671,31 @@ internal class ProfileRepositoryImpl(
         preset: MarketProfile,
         device: MarketProfile,
         useDevice: Boolean,
+        deviceRequested: Boolean,
         overrides: Map<String, String>,
         syncedVersions: Map<String, String?>,
-    ): MarketProfile {
+    ): ProfileSnapshot {
+        val origins = mutableMapOf<String, ProfileFieldOrigin>()
         fun pick(name: String, presetValue: String, deviceValue: String): String {
-            if (name in SYNC_MANAGED) syncedVersions[name]?.takeIf { it.isNotBlank() }?.let { return it }
-            overrides[name]?.let { return it }
+            // 来源在选值时记录；即使真实版本恰好等于预设，也仍是本机或服务器数据。
+            fun chosen(value: String, origin: ProfileFieldOrigin): String {
+                if (name in ProfileSnapshot.VERSION_FIELDS) origins[name] = origin
+                return value
+            }
+            overrides[name]?.let { return chosen(it, ProfileFieldOrigin.CUSTOM) }
+            if (name in SYNC_MANAGED) {
+                syncedVersions[name].orEmpty().validVersionCode().takeIf { it.isNotBlank() }?.let {
+                    return chosen(it, ProfileFieldOrigin.SERVER)
+                }
+            }
+            if (name in ProfileSnapshot.VERSION_FIELDS) {
+                return when {
+                    !deviceRequested -> chosen(presetValue, ProfileFieldOrigin.PRESET)
+                    useDevice && name in DEVICE_BACKED && deviceValue.isNotBlank() ->
+                        chosen(deviceValue, ProfileFieldOrigin.DEVICE)
+                    else -> chosen(presetValue, ProfileFieldOrigin.PRESET_FALLBACK)
+                }
+            }
             return selectProfileField(
                 presetValue = presetValue,
                 deviceValue = deviceValue,
@@ -612,7 +704,7 @@ internal class ProfileRepositoryImpl(
                 deviceBacked = name in DEVICE_BACKED,
             )
         }
-        return MarketProfile(
+        val profile = MarketProfile(
             co = pick("co", preset.co, device.co),
             la = pick("la", preset.la, device.la),
             lo = pick("lo", preset.lo, device.lo),
@@ -669,6 +761,7 @@ internal class ProfileRepositoryImpl(
                 preset.honorIsParallelSpace
             },
         )
+        return ProfileSnapshot(profile, origins)
     }
 
     private fun MarketProfile.toJson(): JsonObject = buildJsonObject {
@@ -693,13 +786,14 @@ internal class ProfileRepositoryImpl(
 
     private companion object {
         const val SYNC_INTERVAL_MS = 86_400_000L
+        const val SYNC_TIMEOUT_MS = 30_000L
         // 基础字段读取失败时沿用该来源的兼容预设；平台读取本身不伪造设备信息。
         val DEVICE_BACKED = setOf(
             "cpuArchitecture", "resolution", "densityDpi", "densityScaleFactor", "sdk", "androidVersion",
-            "hybridFrameworkVersion", "buildId",
+            "marketVersion", "hybridFrameworkVersion", "buildId",
         )
         val APP_LEVEL = setOf(
-            "marketVersion", "pageConfigVersion", "webResVersion", "instanceId",
+            "pageConfigVersion", "webResVersion", "instanceId",
             "apkVer", "apkVerName",
         )
         val SYNC_MANAGED = setOf("webResVersion", "pageConfigVersion")

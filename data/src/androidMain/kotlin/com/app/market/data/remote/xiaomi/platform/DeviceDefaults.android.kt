@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.os.Build
 import android.provider.Settings
+import com.app.market.domain.model.market.AppSource
 import java.util.Locale
 
 internal class AndroidDeviceDefaultsDataSource(
@@ -99,6 +100,10 @@ internal class AndroidDeviceDefaultsDataSource(
                     ).toString(),
             supportedIslandVersion = if (isXiaomi) readIslandVersion(context) else "",
             hybridFrameworkVersion = packageVersionCode(context, "com.miui.hybrid"),
+            marketVersions = mapOf(
+                AppSource.XIAOMI to packageVersionCode(context, "com.xiaomi.market"),
+                AppSource.VIVO to packageVersionCode(context, "com.bbk.appstore"),
+            ),
             isAndroid = true,
             isXiaomi = isXiaomi,
             isComplete = isComplete,
@@ -160,7 +165,7 @@ private fun String.majorVersion(): String = Regex("[0-9]+").find(this)?.value.or
 private fun packageVersionCode(context: Context, pkg: String): String = runCatching {
     val info = context.packageManager.getPackageInfo(pkg, 0)
     (if (Build.VERSION.SDK_INT >= 28) info.longVersionCode else info.versionCode.toLong()).toString()
-}.getOrDefault("")
+}.getOrDefault("").validVersionCode()
 
 private fun readIslandVersion(context: Context): String = runCatching {
     when (Settings.System.getString(context.contentResolver, "notification_focus_protocol")) {

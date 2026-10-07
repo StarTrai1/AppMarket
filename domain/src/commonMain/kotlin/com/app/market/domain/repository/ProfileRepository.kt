@@ -5,13 +5,20 @@ import com.app.market.domain.model.profile.MarketProfile
 import com.app.market.domain.model.profile.OppoRequestContext
 import com.app.market.domain.model.profile.OppoStoreRegion
 import com.app.market.domain.model.profile.ProfileSource
+import com.app.market.domain.model.profile.ProfileSnapshot
+import com.app.market.domain.model.profile.ProfileSyncResult
 import com.app.market.domain.model.profile.ProfileTemplate
 import com.app.market.domain.model.profile.SamsungRequestContext
 import com.app.market.domain.model.profile.SamsungStoreRegion
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /** Persistent device profile used by market requests. */
 interface ProfileRepository {
     suspend fun load(appSource: AppSource = AppSource.XIAOMI): MarketProfile
+    suspend fun snapshot(appSource: AppSource = AppSource.XIAOMI): ProfileSnapshot =
+        ProfileSnapshot(load(appSource))
+    val profileUpdates: Flow<AppSource> get() = emptyFlow()
     suspend fun save(profile: MarketProfile)
     suspend fun save(profile: MarketProfile, overridden: Set<String>, appSource: AppSource = AppSource.XIAOMI)
     suspend fun currentSource(appSource: AppSource = AppSource.XIAOMI): ProfileSource
@@ -35,4 +42,5 @@ interface ProfileRepository {
     suspend fun resetAll(appSource: AppSource = AppSource.XIAOMI)
     suspend fun isOverridden(name: String, appSource: AppSource = AppSource.XIAOMI): Boolean
     suspend fun syncFromServerIfDue()
+    suspend fun syncConfiguration(): ProfileSyncResult = ProfileSyncResult.FAILED
 }

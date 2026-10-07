@@ -1,5 +1,7 @@
 package com.app.market.data.remote.xiaomi.platform
 
+import com.app.market.domain.model.market.AppSource
+
 /** Device fingerprint fields sourced from the platform; the rest of [com.app.market.domain.model.profile.MarketProfile] uses fixed defaults. */
 data class DeviceDefaults(
     val cpuArchitecture: String,
@@ -27,6 +29,8 @@ data class DeviceDefaults(
     val supportedIslandVersion: String = "",
     /** com.miui.hybrid 版本号，未安装为空串。 */
     val hybridFrameworkVersion: String = "",
+    /** 已安装商店的真实 versionCode；只记录协议明确消费 marketVersion 的来源。 */
+    val marketVersions: Map<AppSource, String> = emptyMap(),
     /** 仅 Android 平台提供真实 Build 字段；桌面预设不能作为当前手机读取。 */
     val isAndroid: Boolean = false,
     /** 是否小米设备。 */
@@ -100,3 +104,7 @@ internal fun isHonorFamilyDevice(manufacturer: String, brand: String): Boolean =
 internal interface DeviceDefaultsDataSource {
     fun current(): DeviceDefaults
 }
+
+/** 未安装、查询失败和无效版本均保持未知，兼容回退由资料仓库负责。 */
+internal fun String.validVersionCode(): String =
+    trim().takeIf { (it.toLongOrNull() ?: 0L) > 0L }.orEmpty()

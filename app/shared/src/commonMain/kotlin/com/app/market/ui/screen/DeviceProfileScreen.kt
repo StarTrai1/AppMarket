@@ -35,7 +35,10 @@ import com.app.market.domain.model.market.AppSource.OPPO
 import com.app.market.domain.model.market.AppSource.SAMSUNG
 import com.app.market.domain.model.profile.MarketProfile
 import com.app.market.domain.model.profile.OppoStoreRegion
+import com.app.market.domain.model.profile.ProfileFieldOrigin
+import com.app.market.domain.model.profile.ProfileSnapshot
 import com.app.market.domain.model.profile.ProfileSource
+import com.app.market.domain.model.profile.ProfileSyncResult
 import com.app.market.domain.model.profile.ProfileTemplate
 import com.app.market.domain.model.profile.SamsungStoreRegion
 import com.app.market.platform.UiPlatform
@@ -46,6 +49,11 @@ import com.app.market.resources.device_profile
 import com.app.market.resources.profile_delete_template_confirm
 import com.app.market.resources.profile_get_current_device
 import com.app.market.resources.profile_get_current_device_summary
+import com.app.market.resources.profile_origin_custom
+import com.app.market.resources.profile_origin_device
+import com.app.market.resources.profile_origin_preset
+import com.app.market.resources.profile_origin_preset_fallback
+import com.app.market.resources.profile_origin_server
 import com.app.market.resources.profile_save_template
 import com.app.market.resources.profile_source
 import com.app.market.resources.profile_source_current_device
@@ -54,6 +62,12 @@ import com.app.market.resources.profile_source_preset
 import com.app.market.resources.profile_store_region
 import com.app.market.resources.profile_store_region_china
 import com.app.market.resources.profile_store_region_global
+import com.app.market.resources.profile_sync_configuration
+import com.app.market.resources.profile_sync_configuration_failed
+import com.app.market.resources.profile_sync_configuration_partial
+import com.app.market.resources.profile_sync_configuration_success
+import com.app.market.resources.profile_sync_configuration_summary
+import com.app.market.resources.profile_sync_configuration_working
 import com.app.market.resources.profile_template_name
 import com.app.market.resources.save
 import com.app.market.resources.saved
@@ -90,6 +104,9 @@ fun DeviceProfileScreen(
 ) {
     val uiPlatform = koinInject<UiPlatform>()
     val profiles by viewModel.profiles.collectAsStateWithLifecycle()
+    val fieldOrigins by viewModel.fieldOrigins.collectAsStateWithLifecycle()
+    val isSyncingConfiguration by viewModel.isSyncingConfiguration.collectAsStateWithLifecycle()
+    val configurationSyncResult by viewModel.configurationSyncResult.collectAsStateWithLifecycle()
     val sources by viewModel.sources.collectAsStateWithLifecycle()
     val templateNames by viewModel.templateNames.collectAsStateWithLifecycle()
     val overriddenFields by viewModel.overriddenFields.collectAsStateWithLifecycle()
@@ -181,6 +198,9 @@ fun DeviceProfileScreen(
                 viewModel = viewModel,
                 appSource = appSource,
                 profile = profiles[appSource] ?: return@HorizontalPager,
+                fieldOrigins = fieldOrigins[appSource].orEmpty(),
+                isSyncingConfiguration = isSyncingConfiguration,
+                configurationSyncResult = configurationSyncResult,
                 source = sources[appSource] ?: ProfileSource.PRESET,
                 overridden = overriddenFields[appSource].orEmpty(),
                 selectedTemplate = templateNames[appSource],
@@ -239,6 +259,9 @@ private fun DeviceProfileSourcePage(
     viewModel: DeviceProfileViewModel,
     appSource: AppSource,
     profile: MarketProfile,
+    fieldOrigins: Map<String, ProfileFieldOrigin>,
+    isSyncingConfiguration: Boolean,
+    configurationSyncResult: ProfileSyncResult?,
     source: ProfileSource,
     overridden: Set<String>,
     selectedTemplate: String?,
@@ -330,6 +353,45 @@ private fun DeviceProfileSourcePage(
                 }
             }
         }
+        if (appSource == AppSource.XIAOMI) {
+            item(key = "sync-configuration") {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = stringResource(Res.string.profile_sync_configuration_summary),
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        style = MiuixTheme.textStyles.body2,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                    AppTextButton(
+                        text = stringResource(
+                            if (isSyncingConfiguration) Res.string.profile_sync_configuration_working
+                            else Res.string.profile_sync_configuration,
+                        ),
+                        enabled = !isSyncingConfiguration,
+                        onClick = viewModel::syncConfiguration,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (configurationSyncResult != null) {
+                        Text(
+                            text = stringResource(
+                                when (configurationSyncResult) {
+                                    ProfileSyncResult.SUCCESS -> Res.string.profile_sync_configuration_success
+                                    ProfileSyncResult.PARTIAL -> Res.string.profile_sync_configuration_partial
+                                    ProfileSyncResult.FAILED -> Res.string.profile_sync_configuration_failed
+                                },
+                            ),
+                            color = if (configurationSyncResult == ProfileSyncResult.FAILED) {
+                                MiuixTheme.colorScheme.error
+                            } else {
+                                MiuixTheme.colorScheme.onSurfaceVariantSummary
+                            },
+                            style = MiuixTheme.textStyles.body2,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
+                }
+            }
+        }
         if (appSource == OPPO) {
             item(key = "oppo-store-region") {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -381,13 +443,25 @@ private fun DeviceProfileSourcePage(
             }
         }
         items(DeviceProfileViewModel.fieldsFor(appSource), key = { it }) { name ->
-            TextField(
-                value = DeviceProfileViewModel.valueOf(profile, name),
-                onValueChange = { viewModel.update(appSource, name, it) },
-                label = name,
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextField(
+                    value = DeviceProfileViewModel.valueOf(profile, name),
+                    onValueChange = { viewModel.update(appSource, name, it) },
+                    label = name,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (name in ProfileSnapshot.VERSION_FIELDS) {
+                    fieldOrigins[name]?.let { origin ->
+                        Text(
+                            text = profileOriginLabel(origin),
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            style = MiuixTheme.textStyles.body2,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
+                }
+            }
         }
         item(key = "save") {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -416,6 +490,17 @@ private fun DeviceProfileSourcePage(
         }
     }
 }
+
+@Composable
+private fun profileOriginLabel(origin: ProfileFieldOrigin): String = stringResource(
+    when (origin) {
+        ProfileFieldOrigin.DEVICE -> Res.string.profile_origin_device
+        ProfileFieldOrigin.SERVER -> Res.string.profile_origin_server
+        ProfileFieldOrigin.PRESET -> Res.string.profile_origin_preset
+        ProfileFieldOrigin.PRESET_FALLBACK -> Res.string.profile_origin_preset_fallback
+        ProfileFieldOrigin.CUSTOM -> Res.string.profile_origin_custom
+    },
+)
 
 @Composable
 private fun SaveTemplateDialog(

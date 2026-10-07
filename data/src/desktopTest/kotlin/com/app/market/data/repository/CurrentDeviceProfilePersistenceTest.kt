@@ -189,15 +189,17 @@ private class ProfileFixture(initialDefaults: DeviceDefaults) {
     private fun createRepository(preferences: ProfileMemoryPreferences): ProfileRepositoryImpl =
         ProfileRepositoryImpl(
             preferences = preferences,
-            api = XiaomiApi(
-                preferences = preferences,
-                updateInfoCache = UpdateInfoCache(preferences),
-                identityProvider = object : XiaomiDeviceIdentityDataSource {
-                    override suspend fun identity(): XiaomiDeviceIdentity =
-                        error("Profile selection must not request a remote identity")
-                },
-                http = XiaomiHttpClient(http, client),
-                xiaomiClient = client,
+            configurationSource = XiaomiProfileConfigurationSource(
+                XiaomiApi(
+                    preferences = preferences,
+                    updateInfoCache = UpdateInfoCache(preferences),
+                    identityProvider = object : XiaomiDeviceIdentityDataSource {
+                        override suspend fun identity(): XiaomiDeviceIdentity =
+                            error("Profile selection must not request a remote identity")
+                    },
+                    http = XiaomiHttpClient(http, client),
+                    xiaomiClient = client,
+                ),
             ),
             deviceDefaults = defaults,
             xiaomiClient = client,

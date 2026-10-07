@@ -29,6 +29,9 @@ import com.app.market.domain.model.today.TodayFeedPage
 import com.app.market.domain.model.update.ManualUpdateRequest
 import com.app.market.domain.model.update.ManualUpdateResult
 import com.app.market.domain.model.update.ManualUpdateStatus
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.JsonArray
@@ -60,6 +63,7 @@ internal class XiaomiApi(
     suspend fun syncServerVersions(profile: MarketProfile): ServerVersions? {
         // Official Market obtains the encrypted dctx from /expId before using it as a base parameter.
         refreshDctx(profile, "")
+        currentCoroutineContext().ensureActive()
         val params = commonParams(profile).toMutableMap()
         params.putAll(
             mapOf(
@@ -69,7 +73,13 @@ internal class XiaomiApi(
             )
         )
         val url = XiaomiSigner.signedUrl("$MARKET/config?${query(params)}")
-        val json = runCatching { parseJsonObject(http.get(url, "")) }.getOrNull() ?: return null
+        val json = try {
+            parseJsonObject(http.get(url, ""))
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return null
+        }
         val webRes = json.obj("webResourceInfo").int("versionCode", 0).takeIf { it > 0 }?.toString().orEmpty()
         val tabValue = json.obj("tabInfo").str("value")
         val pageConfig = if (tabValue.isNotBlank()) {
@@ -641,9 +651,14 @@ internal class XiaomiApi(
         val identity = identityProvider.identity()
         val params = commonParams(profile).toMutableMap()
         params["xmsfVersion"] = identity.xmsfVersion.ifBlank { DEFAULT_XMSF_VERSION }
-        val response = runCatching {
+        val response = try {
             parseJsonObject(http.get(XiaomiSigner.signedUrl("$EXP_ID?${query(params)}"), cookie))
-        }.getOrNull() ?: return
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return
+        }
+        currentCoroutineContext().ensureActive()
         response.str("dctx").takeIf(String::isNotBlank)?.let {
             preferences.put(XiaomiIdentityPreferenceKeys.ServerDeviceContext, it)
         }

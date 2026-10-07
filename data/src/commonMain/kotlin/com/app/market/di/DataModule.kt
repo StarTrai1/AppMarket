@@ -26,6 +26,8 @@ import com.app.market.data.repository.MarketRepositoryImpl
 import com.app.market.data.repository.MarketSourceRepositoryImpl
 import com.app.market.data.repository.OppoRepositoryImpl
 import com.app.market.data.repository.ProfileRepositoryImpl
+import com.app.market.data.repository.ProfileConfigurationSource
+import com.app.market.data.repository.XiaomiProfileConfigurationSource
 import com.app.market.data.repository.SamsungRepositoryImpl
 import com.app.market.data.repository.TapTapRepositoryImpl
 import com.app.market.data.repository.TodayRepositoryImpl
@@ -82,6 +84,7 @@ private val commonDataModule = module {
     singleOf(::XiaomiClient)
     singleOf(::XiaomiHttpClient)
     singleOf(::XiaomiApi)
+    singleOf(::XiaomiProfileConfigurationSource) { bind<ProfileConfigurationSource>() }
     singleOf(::ProfileRepositoryImpl) { bind<ProfileRepository>() }
     singleOf(::MarketRepositoryImpl) { bind<MarketRepository>() }
     singleOf(::TodayRepositoryImpl) { bind<TodayRepository>() }
