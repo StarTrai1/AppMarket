@@ -16,12 +16,14 @@ interface UpdatePreferencesRepository {
     val showAppComments: StateFlow<Boolean>
     val showSameDeveloper: StateFlow<Boolean>
     val showPromotions: StateFlow<Boolean>
+
+    /** 进入应用时识别剪贴板中的商店链接并询问是否打开。 */
+    val detectClipboardLinks: StateFlow<Boolean>
     val stripAppNameSubtitle: StateFlow<Boolean>
     val homePage: StateFlow<HomePage>
     val searchSources: StateFlow<Set<AppSource>>
-    val gameSources: StateFlow<Set<AppSource>>
-    val appSources: StateFlow<Set<AppSource>>
     val todaySource: StateFlow<AppSource>
+    val categorySource: StateFlow<AppSource>
     val updateSource: StateFlow<AppSource>
     val permanentIgnores: StateFlow<List<IgnoredUpdate>>
     val onceIgnores: StateFlow<List<IgnoredUpdate>>
@@ -32,12 +34,16 @@ interface UpdatePreferencesRepository {
     suspend fun setShowAppComments(value: Boolean)
     suspend fun setShowSameDeveloper(value: Boolean)
     suspend fun setShowPromotions(value: Boolean)
+    suspend fun setDetectClipboardLinks(value: Boolean)
+
+    /** 上次已询问过的剪贴板链接（统一格式），同一链接只询问一次。 */
+    suspend fun lastClipboardLink(): String
+    suspend fun setLastClipboardLink(value: String)
     suspend fun setStripAppNameSubtitle(value: Boolean)
     suspend fun setHomePage(value: HomePage)
     suspend fun setSearchSources(value: Set<AppSource>)
-    suspend fun setGameSources(value: Set<AppSource>)
-    suspend fun setAppSources(value: Set<AppSource>)
     suspend fun setTodaySource(value: AppSource)
+    suspend fun setCategorySource(value: AppSource)
     suspend fun setUpdateSource(value: AppSource)
     fun isIgnored(app: MarketAppInfo): Boolean
     suspend fun ignoreOnce(app: MarketAppInfo)

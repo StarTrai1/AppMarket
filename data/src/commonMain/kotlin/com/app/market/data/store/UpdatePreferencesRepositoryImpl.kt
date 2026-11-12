@@ -54,6 +54,8 @@ internal class UpdatePreferencesRepositoryImpl(
     override val showSameDeveloper: StateFlow<Boolean> = _showSameDeveloper.asStateFlow()
     private val _showPromotions = MutableStateFlow(false)
     override val showPromotions: StateFlow<Boolean> = _showPromotions.asStateFlow()
+    private val _detectClipboardLinks = MutableStateFlow(UpdatePreferenceKeys.DetectClipboardLinks.default)
+    override val detectClipboardLinks: StateFlow<Boolean> = _detectClipboardLinks.asStateFlow()
     private val _stripAppNameSubtitle = MutableStateFlow(false)
     override val stripAppNameSubtitle: StateFlow<Boolean> = _stripAppNameSubtitle.asStateFlow()
 
@@ -61,12 +63,10 @@ internal class UpdatePreferencesRepositoryImpl(
     override val homePage: StateFlow<HomePage> = _homePage.asStateFlow()
     private val _searchSources = MutableStateFlow(AppSource.Default)
     override val searchSources: StateFlow<Set<AppSource>> = _searchSources.asStateFlow()
-    private val _gameSources = MutableStateFlow(AppSource.Default)
-    override val gameSources: StateFlow<Set<AppSource>> = _gameSources.asStateFlow()
-    private val _appSources = MutableStateFlow(AppSource.Default)
-    override val appSources: StateFlow<Set<AppSource>> = _appSources.asStateFlow()
     private val _todaySource = MutableStateFlow(AppSource.DefaultTodaySource)
     override val todaySource: StateFlow<AppSource> = _todaySource.asStateFlow()
+    private val _categorySource = MutableStateFlow(AppSource.DefaultCategorySource)
+    override val categorySource: StateFlow<AppSource> = _categorySource.asStateFlow()
     private val _updateSource = MutableStateFlow(AppSource.DefaultUpdateSource)
     override val updateSource: StateFlow<AppSource> = _updateSource.asStateFlow()
     private val _permanentIgnores = MutableStateFlow<List<IgnoredUpdate>>(emptyList())
@@ -87,6 +87,9 @@ internal class UpdatePreferencesRepositoryImpl(
             observe("showAppComments", preferences.observe(UpdatePreferenceKeys.ShowAppComments)) { _showAppComments.value = it },
             observe("showSameDeveloper", preferences.observe(UpdatePreferenceKeys.ShowSameDeveloper)) { _showSameDeveloper.value = it },
             observe("showPromotions", preferences.observe(UpdatePreferenceKeys.ShowPromotions)) { _showPromotions.value = it },
+            observe("detectClipboardLinks", preferences.observe(UpdatePreferenceKeys.DetectClipboardLinks)) {
+                _detectClipboardLinks.value = it
+            },
             observe("stripAppNameSubtitle", preferences.observe(UpdatePreferenceKeys.StripAppNameSubtitle)) {
                 _stripAppNameSubtitle.value = it
             },
@@ -94,14 +97,11 @@ internal class UpdatePreferencesRepositoryImpl(
             observe("searchSources", preferences.observe(UpdatePreferenceKeys.SearchSources)) {
                 _searchSources.value = AppSource.parse(it)
             },
-            observe("gameSources", preferences.observe(UpdatePreferenceKeys.GameSources)) {
-                _gameSources.value = AppSource.parse(it)
-            },
-            observe("appSources", preferences.observe(UpdatePreferenceKeys.AppSources)) {
-                _appSources.value = AppSource.parse(it)
-            },
             observe("todaySource", preferences.observe(UpdatePreferenceKeys.TodaySource)) {
                 _todaySource.value = AppSource.fromToken(it).todayOrDefault()
+            },
+            observe("categorySource", preferences.observe(UpdatePreferenceKeys.CategorySource)) {
+                _categorySource.value = AppSource.fromToken(it).categoryOrDefault()
             },
             observe("updateSource", preferences.observe(UpdatePreferenceKeys.UpdateSource)) {
                 _updateSource.value = AppSource.fromToken(it) ?: AppSource.DefaultUpdateSource
@@ -114,6 +114,42 @@ internal class UpdatePreferencesRepositoryImpl(
         scope.launch {
             arrivals.forEach { it.await() }
             _initialized.value = true
+        }
+        // 旧版的游戏 / 应用分区来源在 1255116 被合并为单一 category_source，这里做一次性迁移。
+        scope.launch { migrateLegacyCategorySources() }
+    }
+
+    /**
+     * 把旧版的 `game_sources` / `app_sources` 迁移到 `category_source`。
+     *
+     * 旧版两个键各自独立控制游戏页与应用页；只有它们指向同一个受支持来源时才能无损合并，
+     * 其余情况（缺失、取值不同、来源不受分区支持）保持新版默认值，并保留旧键不做猜测。
+     * 迁移只在 `category_source` 尚未写入时执行，写入与清理旧键在同一次原子更新里完成，
+     * 因此重复启动不会重复覆盖。
+     */
+    private suspend fun migrateLegacyCategorySources() {
+        runCatching {
+            val existing = preferences.read(UpdatePreferenceKeys.CategorySource)
+            if (!existing.isNullOrBlank()) return@runCatching
+            val gameRaw = preferences.read(UpdatePreferenceKeys.LegacyGameSources)
+            val appRaw = preferences.read(UpdatePreferenceKeys.LegacyAppSources)
+            if (gameRaw.isNullOrBlank() || appRaw.isNullOrBlank()) return@runCatching
+            val game = AppSource.parse(gameRaw).singleOrNull()
+            val app = AppSource.parse(appRaw).singleOrNull()
+            if (game == null || game != app || game !in AppSource.CategorySources) return@runCatching
+            preferences.update(
+                UpdatePreferenceKeys.CategorySource.namespace,
+                PreferenceChanges(
+                    strings = mapOf(
+                        UpdatePreferenceKeys.CategorySource to game.token,
+                        UpdatePreferenceKeys.LegacyGameSources to null,
+                        UpdatePreferenceKeys.LegacyAppSources to null,
+                    ),
+                ),
+            )
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            debugLog("UpdatePreferencesRepository") { "legacy category source migration failed: $error" }
         }
     }
 
@@ -157,6 +193,15 @@ internal class UpdatePreferencesRepositoryImpl(
     override suspend fun setShowPromotions(value: Boolean) =
         preferences.put(UpdatePreferenceKeys.ShowPromotions, value)
 
+    override suspend fun setDetectClipboardLinks(value: Boolean) =
+        preferences.put(UpdatePreferenceKeys.DetectClipboardLinks, value)
+
+    override suspend fun lastClipboardLink(): String =
+        preferences.read(UpdatePreferenceKeys.LastClipboardLink).orEmpty()
+
+    override suspend fun setLastClipboardLink(value: String) =
+        preferences.put(UpdatePreferenceKeys.LastClipboardLink, value)
+
     override suspend fun setStripAppNameSubtitle(value: Boolean) =
         preferences.put(UpdatePreferenceKeys.StripAppNameSubtitle, value)
 
@@ -166,14 +211,11 @@ internal class UpdatePreferencesRepositoryImpl(
     override suspend fun setSearchSources(value: Set<AppSource>) =
         preferences.put(UpdatePreferenceKeys.SearchSources, AppSource.serialize(value.ifEmpty { AppSource.Default }))
 
-    override suspend fun setGameSources(value: Set<AppSource>) =
-        preferences.put(UpdatePreferenceKeys.GameSources, AppSource.serialize(value.ifEmpty { AppSource.Default }))
-
-    override suspend fun setAppSources(value: Set<AppSource>) =
-        preferences.put(UpdatePreferenceKeys.AppSources, AppSource.serialize(value.ifEmpty { AppSource.Default }))
-
     override suspend fun setTodaySource(value: AppSource) =
         preferences.put(UpdatePreferenceKeys.TodaySource, value.todayOrDefault().token)
+
+    override suspend fun setCategorySource(value: AppSource) =
+        preferences.put(UpdatePreferenceKeys.CategorySource, value.categoryOrDefault().token)
 
     override suspend fun setUpdateSource(value: AppSource) =
         preferences.put(UpdatePreferenceKeys.UpdateSource, value.token)
@@ -358,3 +400,6 @@ internal class UpdatePreferencesRepositoryImpl(
 
 private fun AppSource?.todayOrDefault(): AppSource =
     this?.takeIf { it.capabilities.supportsTodayFeed } ?: AppSource.DefaultTodaySource
+
+private fun AppSource?.categoryOrDefault(): AppSource =
+    this?.takeIf { it in AppSource.CategorySources } ?: AppSource.DefaultCategorySource

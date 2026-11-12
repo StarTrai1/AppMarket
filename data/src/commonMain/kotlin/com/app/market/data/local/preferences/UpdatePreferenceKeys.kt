@@ -13,11 +13,17 @@ object UpdatePreferenceKeys {
     val StripAppNameSubtitle = BooleanPreferenceKey(NS, "strip_app_name_subtitle")
     val ShowSameDeveloper = BooleanPreferenceKey(NS, "show_same_developer")
     val ShowPromotions = BooleanPreferenceKey(NS, "show_promotions")
+    val DetectClipboardLinks = BooleanPreferenceKey(NS, "detect_clipboard_links", true)
+    val LastClipboardLink = StringPreferenceKey(NS, "last_clipboard_link")
     val HomePage = StringPreferenceKey(NS, "home_page")
     val SearchSources = StringPreferenceKey(NS, "search_sources")
-    val GameSources = StringPreferenceKey(NS, "game_sources")
-    val AppSources = StringPreferenceKey(NS, "app_sources")
+
+    /** 旧版游戏/应用分区来源键（v2.3.3）；仅为迁移保留，读写不再走这两个键。 */
+    val LegacyGameSources = StringPreferenceKey(NS, "game_sources")
+    val LegacyAppSources = StringPreferenceKey(NS, "app_sources")
+
     val TodaySource = StringPreferenceKey(NS, "today_source")
+    val CategorySource = StringPreferenceKey(NS, "category_source")
     val UpdateSource = StringPreferenceKey(NS, "update_source")
     val PermanentIgnores = StringPreferenceKey(NS, "permanent_ignores")
     val OnceIgnores = StringPreferenceKey(NS, "once_ignores")

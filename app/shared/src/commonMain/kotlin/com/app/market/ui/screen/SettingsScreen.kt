@@ -18,6 +18,8 @@ import com.app.market.resources.Res
 import com.app.market.resources.about
 import com.app.market.resources.about_summary
 import com.app.market.resources.app_detail
+import com.app.market.resources.clipboard_link_detect
+import com.app.market.resources.clipboard_link_detect_summary
 import com.app.market.resources.device_profile
 import com.app.market.resources.device_profile_summary
 import com.app.market.resources.downloading_apps
@@ -50,10 +52,8 @@ import com.app.market.resources.saved_packages
 import com.app.market.resources.saved_packages_summary
 import com.app.market.resources.search_sources
 import com.app.market.resources.search_sources_summary
-import com.app.market.resources.game_sources
-import com.app.market.resources.game_sources_summary
-import com.app.market.resources.app_sources
-import com.app.market.resources.app_sources_summary
+import com.app.market.resources.category_source
+import com.app.market.resources.category_source_summary
 import com.app.market.resources.settings_section_download_install
 import com.app.market.resources.show_app_comments
 import com.app.market.resources.show_app_comments_summary
@@ -109,13 +109,13 @@ fun SettingsTab(
     val installerState by installerSettingsViewModel.uiState.collectAsStateWithLifecycle()
     val homePage by updatesViewModel.homePage.collectAsStateWithLifecycle()
     val searchSources by updatesViewModel.searchSources.collectAsStateWithLifecycle()
-    val gameSources by updatesViewModel.gameSources.collectAsStateWithLifecycle()
-    val appSources by updatesViewModel.appSources.collectAsStateWithLifecycle()
+    val categorySource by updatesViewModel.categorySource.collectAsStateWithLifecycle()
     val todaySource by updatesViewModel.todaySource.collectAsStateWithLifecycle()
     val showAppComments by updatesViewModel.showAppComments.collectAsStateWithLifecycle()
     val showSameDeveloper by updatesViewModel.showSameDeveloper.collectAsStateWithLifecycle()
     val showPromotions by updatesViewModel.showPromotions.collectAsStateWithLifecycle()
     val stripAppNameSubtitle by updatesViewModel.stripAppNameSubtitle.collectAsStateWithLifecycle()
+    val detectClipboardLinks by updatesViewModel.detectClipboardLinks.collectAsStateWithLifecycle()
     val selectedSource = AppSource.entries.firstOrNull { it in searchSources } ?: AppSource.Default.first()
     val selectedUpdateSource by updatesViewModel.updateSource.collectAsStateWithLifecycle()
     val searchCapabilities = selectedSource.capabilities
@@ -139,6 +139,7 @@ fun SettingsTab(
                 val sourceOptions = AppSource.entries
                 val updateSourceOptions = AppSource.entries.filter { it.capabilities.supportsUpdates }
                 val todaySourceOptions = AppSource.entries.filter { it.capabilities.supportsTodayFeed }
+                val categorySourceOptions = AppSource.CategorySources
                 Card(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
                     WindowDropdownPreference(
                         title = stringResource(Res.string.today_source),
@@ -164,18 +165,11 @@ fun SettingsTab(
                         onSelectedIndexChange = { updatesViewModel.setSearchSource(sourceOptions[it]) },
                     )
                     WindowDropdownPreference(
-                        title = stringResource(Res.string.game_sources),
-                        summary = stringResource(Res.string.game_sources_summary),
-                        items = sourceOptions.map { appSourceLabel(it) },
-                        selectedIndex = sourceOptions.indexOf(gameSources.firstOrNull()).coerceAtLeast(0),
-                        onSelectedIndexChange = { updatesViewModel.setGameSource(sourceOptions[it]) },
-                    )
-                    WindowDropdownPreference(
-                        title = stringResource(Res.string.app_sources),
-                        summary = stringResource(Res.string.app_sources_summary),
-                        items = sourceOptions.map { appSourceLabel(it) },
-                        selectedIndex = sourceOptions.indexOf(appSources.firstOrNull()).coerceAtLeast(0),
-                        onSelectedIndexChange = { updatesViewModel.setAppSource(sourceOptions[it]) },
+                        title = stringResource(Res.string.category_source),
+                        summary = stringResource(Res.string.category_source_summary),
+                        items = categorySourceOptions.map { appSourceLabel(it) },
+                        selectedIndex = categorySourceOptions.indexOf(categorySource).coerceAtLeast(0),
+                        onSelectedIndexChange = { updatesViewModel.setCategorySource(categorySourceOptions[it]) },
                     )
                 }
             }
@@ -349,6 +343,12 @@ fun SettingsTab(
                         summary = stringResource(Res.string.strip_name_subtitle_summary),
                         checked = stripAppNameSubtitle,
                         onCheckedChange = updatesViewModel::setStripAppNameSubtitle,
+                    )
+                    SwitchPreference(
+                        title = stringResource(Res.string.clipboard_link_detect),
+                        summary = stringResource(Res.string.clipboard_link_detect_summary),
+                        checked = detectClipboardLinks,
+                        onCheckedChange = updatesViewModel::setDetectClipboardLinks,
                     )
                     ArrowPreference(
                         title = stringResource(Res.string.device_profile),

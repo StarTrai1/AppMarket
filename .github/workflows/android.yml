@@ -74,22 +74,34 @@ jobs:
           KEY_ALIAS: ${{ secrets.ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          configured=0
+          set -euo pipefail
           for value in "$SIGNING_KEY" "$KEYSTORE_PASS" "$KEY_ALIAS" "$KEY_PASSWORD"; do
-            if [[ -n "$value" ]]; then
-              configured=$((configured + 1))
+            if [[ -z "$value" ]]; then
+              echo "::error::All four signing secrets are required: SIGNING_KEY, KEY_STORE_PASSWORD, ALIAS, KEY_PASSWORD."
+              exit 1
             fi
           done
-          if [[ "$configured" -eq 4 ]]; then
-            umask 077
-            printf '%s' "$SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
-            echo "KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
-          elif [[ "$configured" -ne 0 || "$GITHUB_REF" == refs/tags/* ]]; then
-            echo "::error::All four signing secrets are required for a release: SIGNING_KEY, KEY_STORE_PASSWORD, ALIAS, KEY_PASSWORD."
+          umask 077
+          # 兼容粘贴时带入的空白和外层引号，严格拒绝无效 Base64。
+          python3 - <<'PY'
+          import base64
+          import os
+          from pathlib import Path
+
+          payload = "".join(os.environ["SIGNING_KEY"].split()).strip("\"'")
+          try:
+              decoded = base64.b64decode(payload, validate=True)
+          except ValueError:
+              raise SystemExit("::error::SIGNING_KEY is not valid Base64.")
+          if not decoded:
+              raise SystemExit("::error::Decoded signing key is empty.")
+          Path(os.environ["RUNNER_TEMP"], "keystore.jks").write_bytes(decoded)
+          PY
+          if ! keytool -list -keystore "$RUNNER_TEMP/keystore.jks" -storepass:env KEYSTORE_PASS -alias "$KEY_ALIAS" > /dev/null 2>&1; then
+            echo "::error::Cannot open the release keystore with the configured password and alias."
             exit 1
-          else
-            echo "This CI APK uses the default debug key because signing secrets are not configured." >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/keystore.jks" >> "$GITHUB_ENV"
 
       - name: Build Release APK
         run: |

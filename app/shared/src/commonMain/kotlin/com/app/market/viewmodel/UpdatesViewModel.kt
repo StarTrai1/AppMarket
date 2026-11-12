@@ -62,15 +62,17 @@ class UpdatesViewModel(
     // Separate flow (not in [uiState]) so the pager can read the seeded value synchronously.
     val homePage: StateFlow<HomePage> = prefs.homePage
     val searchSources: StateFlow<Set<AppSource>> = prefs.searchSources
-    val gameSources: StateFlow<Set<AppSource>> = prefs.gameSources
-    val appSources: StateFlow<Set<AppSource>> = prefs.appSources
     val todaySource: StateFlow<AppSource> = prefs.todaySource
+    val categorySource: StateFlow<AppSource> = prefs.categorySource
     val updateSource: StateFlow<AppSource> = prefs.updateSource
 
     // App-detail display toggles; consumed by the detail screen, surfaced here for the settings UI.
     val showAppComments: StateFlow<Boolean> = prefs.showAppComments
     val showSameDeveloper: StateFlow<Boolean> = prefs.showSameDeveloper
     val showPromotions: StateFlow<Boolean> = prefs.showPromotions
+
+    /** 进入应用时识别剪贴板中的商店链接。 */
+    val detectClipboardLinks: StateFlow<Boolean> = prefs.detectClipboardLinks
 
     // 全局应用名精简开关；App 根部经 CompositionLocal 下发，这里仅供设置页读写。
     val stripAppNameSubtitle: StateFlow<Boolean> = prefs.stripAppNameSubtitle
@@ -139,11 +141,11 @@ class UpdatesViewModel(
     fun setShowAppComments(value: Boolean) = persist { prefs.setShowAppComments(value) }
     fun setShowSameDeveloper(value: Boolean) = persist { prefs.setShowSameDeveloper(value) }
     fun setShowPromotions(value: Boolean) = persist { prefs.setShowPromotions(value) }
+    fun setDetectClipboardLinks(value: Boolean) = persist { prefs.setDetectClipboardLinks(value) }
     fun setStripAppNameSubtitle(value: Boolean) = persist { prefs.setStripAppNameSubtitle(value) }
     fun setHomePage(value: HomePage) = persist { prefs.setHomePage(value) }
     fun setSearchSource(value: AppSource) = persist { prefs.setSearchSources(setOf(value)) }
-    fun setGameSource(value: AppSource) = persist { prefs.setGameSources(setOf(value)) }
-    fun setAppSource(value: AppSource) = persist { prefs.setAppSources(setOf(value)) }
+    fun setCategorySource(value: AppSource) = persist { prefs.setCategorySource(value) }
     fun setTodaySource(value: AppSource) = persist { prefs.setTodaySource(value) }
     fun setUpdateSource(value: AppSource) = persist { prefs.setUpdateSource(value) }
 
